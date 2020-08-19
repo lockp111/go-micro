@@ -10,8 +10,21 @@ type ContainerPort struct {
 
 // EnvVar is environment variable
 type EnvVar struct {
-	Name  string `json:"name"`
-	Value string `json:"value,omitempty"`
+	Name      string        `json:"name"`
+	Value     string        `json:"value,omitempty"`
+	ValueFrom *EnvVarSource `json:"valueFrom,omitempty"`
+}
+
+// EnvVarSource represents a source for the value of an EnvVar.
+type EnvVarSource struct {
+	SecretKeyRef *SecretKeySelector `json:"secretKeyRef,omitempty"`
+}
+
+// SecretKeySelector selects a key of a Secret.
+type SecretKeySelector struct {
+	Key      string `json:"key"`
+	Name     string `json:"name"`
+	Optional bool   `json:"optional,omitempty"`
 }
 
 type Condition struct {
@@ -22,12 +35,14 @@ type Condition struct {
 
 // Container defined container runtime values
 type Container struct {
-	Name    string          `json:"name"`
-	Image   string          `json:"image"`
-	Env     []EnvVar        `json:"env,omitempty"`
-	Command []string        `json:"command,omitempty"`
-	Args    []string        `json:"args,omitempty"`
-	Ports   []ContainerPort `json:"ports,omitempty"`
+	Name           string                `json:"name"`
+	Image          string                `json:"image"`
+	Env            []EnvVar              `json:"env,omitempty"`
+	Command        []string              `json:"command,omitempty"`
+	Args           []string              `json:"args,omitempty"`
+	Ports          []ContainerPort       `json:"ports,omitempty"`
+	ReadinessProbe *Probe                `json:"readinessProbe,omitempty"`
+	Resources      *ResourceRequirements `json:"resources,omitempty"`
 }
 
 // DeploymentSpec defines micro deployment spec
@@ -199,11 +214,37 @@ type ImagePullSecret struct {
 type Secret struct {
 	Type     string            `json:"type,omitempty"`
 	Data     map[string]string `json:"data"`
-	Metadata *Metadata         `json:"metadata"`
+	Metadata *Metadata         `json:"metadata,omitempty"`
 }
 
 // ServiceAccount
 type ServiceAccount struct {
 	Metadata         *Metadata         `json:"metadata,omitempty"`
 	ImagePullSecrets []ImagePullSecret `json:"imagePullSecrets,omitempty"`
+}
+
+// Probe describes a health check to be performed against a container to determine whether it is alive or ready to receive traffic.
+type Probe struct {
+	TCPSocket           TCPSocketAction `json:"tcpSocket,omitempty"`
+	PeriodSeconds       int             `json:"periodSeconds"`
+	InitialDelaySeconds int             `json:"initialDelaySeconds"`
+}
+
+// TCPSocketAction describes an action based on opening a socket
+type TCPSocketAction struct {
+	Host string `json:"host,omitempty"`
+	Port int    `json:"port,omitempty"`
+}
+
+// ResourceRequirements describes the compute resource requirements.
+type ResourceRequirements struct {
+	Limits   *ResourceLimits `json:"limits,omitempty"`
+	Requests *ResourceLimits `json:"requests,omitempty"`
+}
+
+// ResourceLimits describes the limits for a service
+type ResourceLimits struct {
+	Memory           string `json:"memory,omitempty"`
+	CPU              string `json:"cpu,omitempty"`
+	EphemeralStorage string `json:"ephemeral-storage,omitempty"`
 }

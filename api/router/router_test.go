@@ -9,18 +9,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/micro/go-micro/v2/api"
-	"github.com/micro/go-micro/v2/api/handler"
-	"github.com/micro/go-micro/v2/api/handler/rpc"
-	"github.com/micro/go-micro/v2/api/router"
-	rregistry "github.com/micro/go-micro/v2/api/router/registry"
-	rstatic "github.com/micro/go-micro/v2/api/router/static"
-	"github.com/micro/go-micro/v2/client"
-	gcli "github.com/micro/go-micro/v2/client/grpc"
-	rmemory "github.com/micro/go-micro/v2/registry/memory"
-	"github.com/micro/go-micro/v2/server"
-	gsrv "github.com/micro/go-micro/v2/server/grpc"
-	pb "github.com/micro/go-micro/v2/server/grpc/proto"
+	"github.com/micro/go-micro/v3/api"
+	"github.com/micro/go-micro/v3/api/handler"
+	"github.com/micro/go-micro/v3/api/handler/rpc"
+	"github.com/micro/go-micro/v3/api/router"
+	rregistry "github.com/micro/go-micro/v3/api/router/registry"
+	rstatic "github.com/micro/go-micro/v3/api/router/static"
+	"github.com/micro/go-micro/v3/client"
+	gcli "github.com/micro/go-micro/v3/client/grpc"
+	rmemory "github.com/micro/go-micro/v3/registry/memory"
+	rt "github.com/micro/go-micro/v3/router"
+	regRouter "github.com/micro/go-micro/v3/router/registry"
+	"github.com/micro/go-micro/v3/server"
+	gsrv "github.com/micro/go-micro/v3/server/grpc"
+	pb "github.com/micro/go-micro/v3/server/grpc/proto"
 )
 
 // server is used to implement helloworld.GreeterServer.
@@ -55,9 +57,13 @@ func initial(t *testing.T) (server.Server, client.Client) {
 		server.Registry(r),
 	)
 
+	rtr := regRouter.NewRouter(
+		rt.Registry(r),
+	)
+
 	// create a new server
 	c := gcli.NewClient(
-		client.Registry(r),
+		client.Router(rtr),
 	)
 
 	h := &testServer{}

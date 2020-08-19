@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+
+	"github.com/micro/go-micro/v3/logger"
 )
 
 // Request is used to construct a http request for the k8s API.
@@ -30,7 +32,7 @@ type Request struct {
 	err error
 }
 
-// Params is the object to pass in to set paramaters
+// Params is the object to pass in to set parameters
 // on a request.
 type Params struct {
 	LabelSelector map[string]string
@@ -88,7 +90,7 @@ func (r *Request) Resource(s string) *Request {
 	return r
 }
 
-// SubResource sets a subresource on a resource,
+// SubResource sets a sub resource on a resource,
 // e.g. pods/log for pod logs
 func (r *Request) SubResource(s string) *Request {
 	r.subResource = &s
@@ -130,7 +132,7 @@ func (r *Request) Body(in interface{}) *Request {
 	return r
 }
 
-// Params isused to set paramters on a request
+// Params is used to set parameters on a request
 func (r *Request) Params(p *Params) *Request {
 	for k, v := range p.LabelSelector {
 		// create new key=value pair
@@ -217,6 +219,7 @@ func (r *Request) Do() *Response {
 		}
 	}
 
+	logger.Debugf("[Kubernetes] %v %v", req.Method, req.URL.String())
 	res, err := r.client.Do(req)
 	if err != nil {
 		return &Response{

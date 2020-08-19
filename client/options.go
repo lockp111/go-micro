@@ -4,32 +4,40 @@ import (
 	"context"
 	"time"
 
-	"github.com/micro/go-micro/v2/auth"
-	"github.com/micro/go-micro/v2/broker"
-	"github.com/micro/go-micro/v2/client/selector"
-	"github.com/micro/go-micro/v2/codec"
-	"github.com/micro/go-micro/v2/registry"
-	"github.com/micro/go-micro/v2/transport"
+	"github.com/micro/go-micro/v3/broker"
+	"github.com/micro/go-micro/v3/broker/http"
+	"github.com/micro/go-micro/v3/codec"
+	"github.com/micro/go-micro/v3/registry"
+	"github.com/micro/go-micro/v3/router"
+	regRouter "github.com/micro/go-micro/v3/router/registry"
+	"github.com/micro/go-micro/v3/selector"
+	"github.com/micro/go-micro/v3/selector/random"
+	"github.com/micro/go-micro/v3/transport"
+	thttp "github.com/micro/go-micro/v3/transport/http"
 )
 
 type Options struct {
 	// Used to select codec
 	ContentType string
+	// Proxy address to send requests via
+	Proxy string
 
 	// Plugged interfaces
-	Auth      auth.Auth
 	Broker    broker.Broker
 	Codecs    map[string]codec.NewCodec
-	Registry  registry.Registry
+	Router    router.Router
 	Selector  selector.Selector
 	Transport transport.Transport
 
-	// Router sets the router
-	Router Router
+	// Lookup used for looking up routes
+	Lookup LookupFunc
 
 	// Connection Pool
 	PoolSize int
 	PoolTTL  time.Duration
+
+	// Response cache
+	Cache *Cache
 
 	// Middleware for client
 	Wrappers []Wrapper
@@ -43,24 +51,32 @@ type Options struct {
 }
 
 type CallOptions struct {
-	SelectOptions []selector.SelectOption
-
 	// Address of remote hosts
 	Address []string
 	// Backoff func
 	Backoff BackoffFunc
-	// Check if retriable func
-	Retry RetryFunc
+	// Duration to cache the response for
+	CacheExpiry time.Duration
 	// Transport Dial Timeout
 	DialTimeout time.Duration
 	// Number of Call attempts
 	Retries int
+	// Check if retriable func
+	Retry RetryFunc
 	// Request/Response timeout
 	RequestTimeout time.Duration
+	// Router to use for this call
+	Router router.Router
+	// Selector to use for the call
+	Selector selector.Selector
+	// SelectOptions to use when selecting a route
+	SelectOptions []selector.SelectOption
 	// Stream timeout for the stream
 	StreamTimeout time.Duration
-	// Use the services own auth token
-	ServiceToken bool
+	// Use the auth token as the authorization header
+	AuthToken bool
+	// Network to lookup the route within
+	Network string
 
 	// Middleware for low level call func
 	CallWrappers []CallWrapper
@@ -93,8 +109,9 @@ type RequestOptions struct {
 
 func NewOptions(options ...Option) Options {
 	opts := Options{
+		Cache:       NewCache(),
 		Context:     context.Background(),
-		ContentType: DefaultContentType,
+		ContentType: "application/protobuf",
 		Codecs:      make(map[string]codec.NewCodec),
 		CallOptions: CallOptions{
 			Backoff:        DefaultBackoff,
@@ -103,13 +120,13 @@ func NewOptions(options ...Option) Options {
 			RequestTimeout: DefaultRequestTimeout,
 			DialTimeout:    transport.DefaultDialTimeout,
 		},
+		Lookup:    LookupRoute,
 		PoolSize:  DefaultPoolSize,
 		PoolTTL:   DefaultPoolTTL,
-		Auth:      auth.DefaultAuth,
-		Broker:    broker.DefaultBroker,
-		Selector:  selector.DefaultSelector,
-		Registry:  registry.DefaultRegistry,
-		Transport: transport.DefaultTransport,
+		Broker:    http.NewBroker(),
+		Router:    regRouter.NewRouter(),
+		Selector:  random.NewSelector(),
+		Transport: thttp.NewTransport(),
 	}
 
 	for _, o := range options {
@@ -123,13 +140,6 @@ func NewOptions(options ...Option) Options {
 func Broker(b broker.Broker) Option {
 	return func(o *Options) {
 		o.Broker = b
-	}
-}
-
-// Auth to be used when making a request
-func Auth(a auth.Auth) Option {
-	return func(o *Options) {
-		o.Auth = a
 	}
 }
 
@@ -147,6 +157,13 @@ func ContentType(ct string) Option {
 	}
 }
 
+// Proxy sets the proxy address
+func Proxy(addr string) Option {
+	return func(o *Options) {
+		o.Proxy = addr
+	}
+}
+
 // PoolSize sets the connection pool size
 func PoolSize(d int) Option {
 	return func(o *Options) {
@@ -161,15 +178,6 @@ func PoolTTL(d time.Duration) Option {
 	}
 }
 
-// Registry to find nodes for a given service
-func Registry(r registry.Registry) Option {
-	return func(o *Options) {
-		o.Registry = r
-		// set in the selector
-		o.Selector.Init(selector.Registry(r))
-	}
-}
-
 // Transport to use for communication e.g http, rabbitmq, etc
 func Transport(t transport.Transport) Option {
 	return func(o *Options) {
@@ -177,7 +185,21 @@ func Transport(t transport.Transport) Option {
 	}
 }
 
-// Select is used to select a node to route a request to
+// Registry sets the routers registry
+func Registry(r registry.Registry) Option {
+	return func(o *Options) {
+		o.Router.Init(router.Registry(r))
+	}
+}
+
+// Router is used to lookup routes for a service
+func Router(r router.Router) Option {
+	return func(o *Options) {
+		o.Router = r
+	}
+}
+
+// Selector is used to select a route
 func Selector(s selector.Selector) Option {
 	return func(o *Options) {
 		o.Selector = s
@@ -203,6 +225,13 @@ func WrapCall(cw ...CallWrapper) Option {
 func Backoff(fn BackoffFunc) Option {
 	return func(o *Options) {
 		o.CallOptions.Backoff = fn
+	}
+}
+
+// Lookup sets the lookup function to use for resolving service names
+func Lookup(l LookupFunc) Option {
+	return func(o *Options) {
+		o.Lookup = l
 	}
 }
 
@@ -266,12 +295,6 @@ func WithAddress(a ...string) CallOption {
 	}
 }
 
-func WithSelectOption(so ...selector.SelectOption) CallOption {
-	return func(o *CallOptions) {
-		o.SelectOptions = append(o.SelectOptions, so...)
-	}
-}
-
 // WithCallWrapper is a CallOption which adds to the existing CallFunc wrappers
 func WithCallWrapper(cw ...CallWrapper) CallOption {
 	return func(o *CallOptions) {
@@ -326,11 +349,47 @@ func WithDialTimeout(d time.Duration) CallOption {
 	}
 }
 
-// WithServiceToken is a CallOption which overrides the
+// WithAuthToken is a CallOption which overrides the
 // authorization header with the services own auth token
-func WithServiceToken() CallOption {
+func WithAuthToken() CallOption {
 	return func(o *CallOptions) {
-		o.ServiceToken = true
+		o.AuthToken = true
+	}
+}
+
+// WithCache is a CallOption which sets the duration the response
+// shoull be cached for
+func WithCache(c time.Duration) CallOption {
+	return func(o *CallOptions) {
+		o.CacheExpiry = c
+	}
+}
+
+// WithNetwork is a CallOption which sets the network attribute
+func WithNetwork(n string) CallOption {
+	return func(o *CallOptions) {
+		o.Network = n
+	}
+}
+
+// WithRouter sets the router to use for this call
+func WithRouter(r router.Router) CallOption {
+	return func(o *CallOptions) {
+		o.Router = r
+	}
+}
+
+// WithSelector sets the selector to use for this call
+func WithSelector(s selector.Selector) CallOption {
+	return func(o *CallOptions) {
+		o.Selector = s
+	}
+}
+
+// WithSelectOptions sets the options to pass to the selector for this call
+func WithSelectOptions(sops ...selector.SelectOption) CallOption {
+	return func(o *CallOptions) {
+		o.SelectOptions = sops
 	}
 }
 
@@ -351,12 +410,5 @@ func WithContentType(ct string) RequestOption {
 func StreamingRequest() RequestOption {
 	return func(o *RequestOptions) {
 		o.Stream = true
-	}
-}
-
-// WithRouter sets the client router
-func WithRouter(r Router) Option {
-	return func(o *Options) {
-		o.Router = r
 	}
 }

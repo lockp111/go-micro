@@ -8,8 +8,6 @@ var templates = map[string]string{
 	"serviceaccount": serviceAccountTmpl,
 }
 
-// stripped image pull policy always
-// imagePullPolicy: Always
 var deploymentTmpl = `
 apiVersion: apps/v1
 kind: Deployment
@@ -62,6 +60,19 @@ spec:
           {{- range . }}
           - name: "{{ .Name }}"
             value: "{{ .Value }}"
+          {{- if .ValueFrom }}
+          {{- with .ValueFrom }}
+            valueFrom: 
+              {{- if .SecretKeyRef }}
+              {{- with .SecretKeyRef }}
+              secretKeyRef:
+                key: {{ .Key }}
+                name: {{ .Name }}
+                optional: {{ .Optional }}
+              {{- end }}
+              {{- end }}
+          {{- end }}
+          {{- end }}
           {{- end }}
           {{- end }}
           args:
@@ -73,15 +84,63 @@ spec:
           - {{.}}
           {{- end }}
           image: {{ .Image }}
+          imagePullPolicy: Always
           ports:
           {{- with .Ports }}
           {{- range . }}
           - containerPort: {{ .ContainerPort }}
             name: {{ .Name }}
-          {{- end}}
-          {{- end}}
+          {{- end }}
+          {{- end }}
+          {{- if .ReadinessProbe }}
+          {{- with .ReadinessProbe }}
+          readinessProbe:
+            {{- with .TCPSocket }}
+            tcpSocket:
+              {{- if .Host }}
+              host: {{ .Host }}
+              {{- end }}
+              port: {{ .Port }}
+            {{- end }}
+            initialDelaySeconds: {{ .InitialDelaySeconds }}
+            periodSeconds: {{ .PeriodSeconds }}
+          {{- end }}
+          {{- end }}
+          {{- if .Resources }}
+          {{- with .Resources }}
+          resources:
+            {{- if .Limits }}
+            {{- with .Limits }}
+            limits:
+              {{- if .Memory }}
+              memory: {{ .Memory }}
+              {{- end }}
+              {{- if .CPU }}
+              cpu: {{ .CPU }}
+              {{- end }}
+              {{- if .EphemeralStorage }}
+              ephemeral-storage: {{ .EphemeralStorage }}
+              {{- end }}
+            {{- end }}
+            {{- end }}
+            {{- if .Requests }}
+            {{- with .Requests }}
+            requests:
+              {{- if .Memory }}
+              memory: {{ .Memory }}
+              {{- end }}
+              {{- if .CPU }}
+              cpu: {{ .CPU }}
+              {{- end }}
+              {{- if .EphemeralStorage }}
+              ephemeral-storage: {{ .EphemeralStorage }}
+              {{- end }}
+            {{- end }}
+            {{- end }}
+          {{- end }}
+          {{- end }}
       {{- end }}
-      {{- end}}
+      {{- end }}
 `
 
 var serviceTmpl = `
@@ -129,6 +188,7 @@ metadata:
 var secretTmpl = `
 apiVersion: v1
 kind: Secret
+type: "{{ .Type }}"
 metadata:
   name: "{{ .Metadata.Name }}"
   namespace: "{{ .Metadata.Namespace }}"
@@ -139,11 +199,11 @@ metadata:
     {{- end }}
     {{- end }}
 data:
-{{- with .Data }}
-{{- range $key, $value := . }}
-{{ $key }}: "{{ $value }}"
-{{- end }}
-{{- end }}
+  {{- with .Data }}
+  {{- range $key, $value := . }}
+  {{ $key }}: "{{ $value }}"
+  {{- end }}
+  {{- end }}
 `
 
 var serviceAccountTmpl = `

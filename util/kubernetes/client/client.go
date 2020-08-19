@@ -13,8 +13,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/micro/go-micro/v2/logger"
-	"github.com/micro/go-micro/v2/util/kubernetes/api"
+	"github.com/micro/go-micro/v3/logger"
+	"github.com/micro/go-micro/v3/util/kubernetes/api"
 )
 
 var (
@@ -37,7 +37,7 @@ type client struct {
 type Client interface {
 	// Create creates new API resource
 	Create(*Resource, ...CreateOption) error
-	// Get queries API resrouces
+	// Get queries API resources
 	Get(*Resource, ...GetOption) error
 	// Update patches existing API object
 	Update(*Resource, ...UpdateOption) error
@@ -312,16 +312,22 @@ func NewDeployment(name, version, typ, namespace string) *Deployment {
 		Template: &Template{
 			Metadata: Metadata,
 			PodSpec: &PodSpec{
-				ServiceAccountName: namespace,
 				Containers: []Container{{
 					Name:    name,
 					Image:   DefaultImage,
 					Env:     []EnvVar{env},
-					Command: []string{"go", "run", "."},
+					Command: []string{},
 					Ports: []ContainerPort{{
 						Name:          "service-port",
 						ContainerPort: 8080,
 					}},
+					ReadinessProbe: &Probe{
+						TCPSocket: TCPSocketAction{
+							Port: 8080,
+						},
+						PeriodSeconds:       10,
+						InitialDelaySeconds: 10,
+					},
 				}},
 			},
 		},

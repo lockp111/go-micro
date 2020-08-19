@@ -1,16 +1,17 @@
 package reader
 
 import (
-	"github.com/micro/go-micro/v2/config/encoder"
-	"github.com/micro/go-micro/v2/config/encoder/hcl"
-	"github.com/micro/go-micro/v2/config/encoder/json"
-	"github.com/micro/go-micro/v2/config/encoder/toml"
-	"github.com/micro/go-micro/v2/config/encoder/xml"
-	"github.com/micro/go-micro/v2/config/encoder/yaml"
+	"github.com/micro/go-micro/v3/config/encoder"
+	"github.com/micro/go-micro/v3/config/encoder/hcl"
+	"github.com/micro/go-micro/v3/config/encoder/json"
+	"github.com/micro/go-micro/v3/config/encoder/toml"
+	"github.com/micro/go-micro/v3/config/encoder/xml"
+	"github.com/micro/go-micro/v3/config/encoder/yaml"
 )
 
 type Options struct {
-	Encoding map[string]encoder.Encoder
+	Encoding              map[string]encoder.Encoder
+	DisableReplaceEnvVars bool
 }
 
 type Option func(o *Options)
@@ -38,5 +39,12 @@ func WithEncoder(e encoder.Encoder) Option {
 			o.Encoding = make(map[string]encoder.Encoder)
 		}
 		o.Encoding[e.String()] = e
+	}
+}
+
+// WithDisableReplaceEnvVars disables the environment variable interpolation preprocessor
+func WithDisableReplaceEnvVars() Option {
+	return func(o *Options) {
+		o.DisableReplaceEnvVars = true
 	}
 }

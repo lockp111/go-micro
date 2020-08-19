@@ -4,9 +4,10 @@ package broker
 import (
 	"context"
 
-	"github.com/micro/go-micro/v2/broker"
-	"github.com/micro/go-micro/v2/transport"
-	"github.com/micro/go-micro/v2/tunnel"
+	"github.com/micro/go-micro/v3/broker"
+	"github.com/micro/go-micro/v3/transport"
+	"github.com/micro/go-micro/v3/tunnel"
+	"github.com/micro/go-micro/v3/tunnel/mucp"
 )
 
 type tunBroker struct {
@@ -123,12 +124,9 @@ func (t *tunSubscriber) run() {
 		c.Close()
 
 		// handle the message
-		go t.handler(&tunEvent{
-			topic: t.topic,
-			message: &broker.Message{
-				Header: m.Header,
-				Body:   m.Body,
-			},
+		go t.handler(&broker.Message{
+			Header: m.Header,
+			Body:   m.Body,
 		})
 	}
 }
@@ -176,7 +174,7 @@ func NewBroker(opts ...broker.Option) broker.Broker {
 	}
 	t, ok := options.Context.Value(tunnelKey{}).(tunnel.Tunnel)
 	if !ok {
-		t = tunnel.NewTunnel()
+		t = mucp.NewTunnel()
 	}
 
 	a, ok := options.Context.Value(tunnelAddr{}).(string)

@@ -7,11 +7,6 @@ import (
 )
 
 var (
-	// DefaultRuntime is default micro runtime
-	DefaultRuntime Runtime = NewRuntime()
-	// DefaultName is default runtime service name
-	DefaultName = "go.micro.runtime"
-
 	ErrAlreadyExists = errors.New("already exists")
 )
 
@@ -28,7 +23,7 @@ type Runtime interface {
 	// Remove a service
 	Delete(*Service, ...DeleteOption) error
 	// Logs returns the logs for a service
-	Logs(*Service, ...LogsOption) (LogStream, error)
+	Logs(*Service, ...LogsOption) (Logs, error)
 	// Start starts the runtime
 	Start() error
 	// Stop shuts down the runtime
@@ -37,14 +32,15 @@ type Runtime interface {
 	String() string
 }
 
-// Stream returns a log stream
-type LogStream interface {
+// Logs returns a log stream
+type Logs interface {
 	Error() error
-	Chan() chan LogRecord
+	Chan() chan Log
 	Stop() error
 }
 
-type LogRecord struct {
+// Log is a log message
+type Log struct {
 	Message  string
 	Metadata map[string]string
 }
@@ -85,14 +81,16 @@ func (t EventType) String() string {
 
 // Event is notification event
 type Event struct {
+	// ID of the event
+	ID string
 	// Type is event type
 	Type EventType
 	// Timestamp is event timestamp
 	Timestamp time.Time
-	// Service is the name of the service
-	Service string
-	// Version of the build
-	Version string
+	// Service the event relates to
+	Service *Service
+	// Options to use when processing the event
+	Options *CreateOptions
 }
 
 // Service is runtime service
@@ -105,4 +103,17 @@ type Service struct {
 	Source string
 	// Metadata stores metadata
 	Metadata map[string]string
+}
+
+// Resources which are allocated to a serivce
+type Resources struct {
+	// CPU is the maximum amount of CPU the service will be allocated (unit millicpu)
+	// e.g. 0.25CPU would be passed as 250
+	CPU int
+	// Mem is the maximum amount of memory the service will be allocated (unit mebibyte)
+	// e.g. 128 MiB of memory would be passed as 128
+	Mem int
+	// Disk is the maximum amount of disk space the service will be allocated (unit mebibyte)
+	// e.g. 128 MiB of memory would be passed as 128
+	Disk int
 }

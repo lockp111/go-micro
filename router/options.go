@@ -1,9 +1,11 @@
 package router
 
 import (
+	"context"
+
 	"github.com/google/uuid"
-	"github.com/micro/go-micro/v2/client"
-	"github.com/micro/go-micro/v2/registry"
+	"github.com/micro/go-micro/v3/registry"
+	"github.com/micro/go-micro/v3/registry/mdns"
 )
 
 // Options are router options
@@ -18,10 +20,10 @@ type Options struct {
 	Network string
 	// Registry is the local registry
 	Registry registry.Registry
-	// Advertise is the advertising strategy
-	Advertise Strategy
-	// Client for calling router
-	Client client.Client
+	// Context for additional options
+	Context context.Context
+	// Precache routes
+	Precache bool
 }
 
 // Id sets Router Id
@@ -35,13 +37,6 @@ func Id(id string) Option {
 func Address(a string) Option {
 	return func(o *Options) {
 		o.Address = a
-	}
-}
-
-// Client to call router service
-func Client(c client.Client) Option {
-	return func(o *Options) {
-		o.Client = c
 	}
 }
 
@@ -66,20 +61,19 @@ func Registry(r registry.Registry) Option {
 	}
 }
 
-// Strategy sets route advertising strategy
-func Advertise(a Strategy) Option {
+// Precache the routes
+func Precache() Option {
 	return func(o *Options) {
-		o.Advertise = a
+		o.Precache = true
 	}
 }
 
 // DefaultOptions returns router default options
 func DefaultOptions() Options {
 	return Options{
-		Id:        uuid.New().String(),
-		Address:   DefaultAddress,
-		Network:   DefaultNetwork,
-		Registry:  registry.DefaultRegistry,
-		Advertise: AdvertiseLocal,
+		Id:       uuid.New().String(),
+		Network:  DefaultNetwork,
+		Registry: mdns.NewRegistry(),
+		Context:  context.Background(),
 	}
 }

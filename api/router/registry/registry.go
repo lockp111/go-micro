@@ -10,13 +10,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/micro/go-micro/v2/api"
-	"github.com/micro/go-micro/v2/api/router"
-	"github.com/micro/go-micro/v2/api/router/util"
-	"github.com/micro/go-micro/v2/logger"
-	"github.com/micro/go-micro/v2/metadata"
-	"github.com/micro/go-micro/v2/registry"
-	"github.com/micro/go-micro/v2/registry/cache"
+	"github.com/micro/go-micro/v3/api"
+	"github.com/micro/go-micro/v3/api/router"
+	"github.com/micro/go-micro/v3/logger"
+	"github.com/micro/go-micro/v3/metadata"
+	"github.com/micro/go-micro/v3/registry"
+	"github.com/micro/go-micro/v3/registry/cache"
+	util "github.com/micro/go-micro/v3/util/router"
 )
 
 // endpoint struct, that holds compiled pcre
@@ -99,7 +99,7 @@ func (r *registryRouter) process(res *registry.Result) {
 	service, err := r.rc.GetService(res.Service.Name)
 	if err != nil {
 		if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
-			logger.Errorf("unable to get service: %v", err)
+			logger.Errorf("unable to get %v service: %v", res.Service.Name, err)
 		}
 		return
 	}
@@ -127,7 +127,10 @@ func (r *registryRouter) store(services []*registry.Service) {
 			key := fmt.Sprintf("%s.%s", service.Name, sep.Name)
 			// decode endpoint
 			end := api.Decode(sep.Metadata)
-
+			// no endpoint or no name
+			if end == nil || len(end.Name) == 0 {
+				continue
+			}
 			// if we got nothing skip
 			if err := api.Validate(end); err != nil {
 				if logger.V(logger.TraceLevel, logger.DefaultLogger) {
@@ -188,7 +191,7 @@ func (r *registryRouter) store(services []*registry.Service) {
 		for _, p := range ep.Endpoint.Path {
 			var pcreok bool
 
-			if p[0] == '^' && p[len(p)-1] != '$' {
+			if p[0] == '^' && p[len(p)-1] == '$' {
 				pcrereg, err := regexp.CompilePOSIX(p)
 				if err == nil {
 					cep.pcreregs = append(cep.pcreregs, pcrereg)
@@ -260,7 +263,7 @@ func (r *registryRouter) watch() {
 			res, err := w.Next()
 			if err != nil {
 				if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
-					logger.Errorf("error getting next endoint: %v", err)
+					logger.Errorf("error getting next endpoint: %v", err)
 				}
 				close(ch)
 				break
@@ -434,7 +437,7 @@ func (r *registryRouter) Route(req *http.Request) (*api.Service, error) {
 	name := rp.Name
 
 	// get service
-	services, err := r.rc.GetService(name)
+	services, err := r.rc.GetService(name, registry.GetDomain(rp.Domain))
 	if err != nil {
 		return nil, err
 	}

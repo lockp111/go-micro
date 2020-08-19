@@ -1,10 +1,10 @@
 package auth
 
 import (
+	"context"
 	"time"
 
-	"github.com/micro/go-micro/v2/auth/provider"
-	"github.com/micro/go-micro/v2/store"
+	"github.com/micro/go-micro/v3/store"
 )
 
 func NewOptions(opts ...Option) Options {
@@ -12,17 +12,12 @@ func NewOptions(opts ...Option) Options {
 	for _, o := range opts {
 		o(&options)
 	}
-
-	if len(options.Namespace) == 0 {
-		options.Namespace = DefaultNamespace
-	}
-
 	return options
 }
 
 type Options struct {
-	// Namespace the service belongs to
-	Namespace string
+	// Issuer of the service's account
+	Issuer string
 	// ID is the services auth ID
 	ID string
 	// Secret is used to authenticate the service
@@ -33,20 +28,29 @@ type Options struct {
 	PublicKey string
 	// PrivateKey for encoding JWTs
 	PrivateKey string
-	// Provider is an auth provider
-	Provider provider.Provider
 	// LoginURL is the relative url path where a user can login
 	LoginURL string
 	// Store to back auth
 	Store store.Store
+	// Addrs sets the addresses of auth
+	Addrs []string
+	// Context to store other options
+	Context context.Context
 }
 
 type Option func(o *Options)
 
-// Namespace the service belongs to
-func Namespace(n string) Option {
+// Addrs is the auth addresses to use
+func Addrs(addrs ...string) Option {
 	return func(o *Options) {
-		o.Namespace = n
+		o.Addrs = addrs
+	}
+}
+
+// Issuer of the services account
+func Issuer(i string) Option {
+	return func(o *Options) {
+		o.Issuer = i
 	}
 }
 
@@ -86,13 +90,6 @@ func ClientToken(token *Token) Option {
 	}
 }
 
-// Provider set the auth provider
-func Provider(p provider.Provider) Option {
-	return func(o *Options) {
-		o.Provider = p
-	}
-}
-
 // LoginURL sets the auth LoginURL
 func LoginURL(url string) Option {
 	return func(o *Options) {
@@ -103,16 +100,16 @@ func LoginURL(url string) Option {
 type GenerateOptions struct {
 	// Metadata associated with the account
 	Metadata map[string]string
-	// Roles/scopes associated with the account
-	Roles []string
-	// Namespace the account belongs too
-	Namespace string
+	// Scopes the account has access too
+	Scopes []string
 	// Provider of the account, e.g. oauth
 	Provider string
 	// Type of the account, e.g. user
 	Type string
 	// Secret used to authenticate the account
 	Secret string
+	// Issuer of the account, e.g. micro
+	Issuer string
 }
 
 type GenerateOption func(o *GenerateOptions)
@@ -138,24 +135,24 @@ func WithMetadata(md map[string]string) GenerateOption {
 	}
 }
 
-// WithRoles for the generated account
-func WithRoles(rs ...string) GenerateOption {
-	return func(o *GenerateOptions) {
-		o.Roles = rs
-	}
-}
-
-// WithNamespace for the generated account
-func WithNamespace(n string) GenerateOption {
-	return func(o *GenerateOptions) {
-		o.Namespace = n
-	}
-}
-
 // WithProvider for the generated account
 func WithProvider(p string) GenerateOption {
 	return func(o *GenerateOptions) {
 		o.Provider = p
+	}
+}
+
+// WithScopes for the generated account
+func WithScopes(s ...string) GenerateOption {
+	return func(o *GenerateOptions) {
+		o.Scopes = s
+	}
+}
+
+// WithIssuer for the generated account
+func WithIssuer(i string) GenerateOption {
+	return func(o *GenerateOptions) {
+		o.Issuer = i
 	}
 }
 
@@ -177,6 +174,8 @@ type TokenOptions struct {
 	RefreshToken string
 	// Expiry is the time the token should live for
 	Expiry time.Duration
+	// Issuer of the account
+	Issuer string
 }
 
 type TokenOption func(o *TokenOptions)
@@ -201,6 +200,12 @@ func WithToken(rt string) TokenOption {
 	}
 }
 
+func WithTokenIssuer(iss string) TokenOption {
+	return func(o *TokenOptions) {
+		o.Issuer = iss
+	}
+}
+
 // NewTokenOptions from a slice of options
 func NewTokenOptions(opts ...TokenOption) TokenOptions {
 	var options TokenOptions
@@ -214,4 +219,41 @@ func NewTokenOptions(opts ...TokenOption) TokenOptions {
 	}
 
 	return options
+}
+
+type VerifyOptions struct {
+	Context   context.Context
+	Namespace string
+}
+
+type VerifyOption func(o *VerifyOptions)
+
+func VerifyContext(ctx context.Context) VerifyOption {
+	return func(o *VerifyOptions) {
+		o.Context = ctx
+	}
+}
+func VerifyNamespace(ns string) VerifyOption {
+	return func(o *VerifyOptions) {
+		o.Namespace = ns
+	}
+}
+
+type RulesOptions struct {
+	Context   context.Context
+	Namespace string
+}
+
+type RulesOption func(o *RulesOptions)
+
+func RulesContext(ctx context.Context) RulesOption {
+	return func(o *RulesOptions) {
+		o.Context = ctx
+	}
+}
+
+func RulesNamespace(ns string) RulesOption {
+	return func(o *RulesOptions) {
+		o.Namespace = ns
+	}
 }

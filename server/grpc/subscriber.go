@@ -7,12 +7,12 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/micro/go-micro/v2/broker"
-	"github.com/micro/go-micro/v2/errors"
-	"github.com/micro/go-micro/v2/logger"
-	"github.com/micro/go-micro/v2/metadata"
-	"github.com/micro/go-micro/v2/registry"
-	"github.com/micro/go-micro/v2/server"
+	"github.com/micro/go-micro/v3/broker"
+	"github.com/micro/go-micro/v3/errors"
+	"github.com/micro/go-micro/v3/logger"
+	"github.com/micro/go-micro/v3/metadata"
+	"github.com/micro/go-micro/v3/registry"
+	"github.com/micro/go-micro/v3/server"
 )
 
 const (
@@ -167,7 +167,7 @@ func validateSubscriber(sub server.Subscriber) error {
 }
 
 func (g *grpcServer) createSubHandler(sb *subscriber, opts server.Options) broker.Handler {
-	return func(p broker.Event) (err error) {
+	return func(msg *broker.Message) (err error) {
 
 		defer func() {
 			if r := recover(); r != nil {
@@ -175,11 +175,10 @@ func (g *grpcServer) createSubHandler(sb *subscriber, opts server.Options) broke
 					logger.Error("panic recovered: ", r)
 					logger.Error(string(debug.Stack()))
 				}
-				err = errors.InternalServerError("go.micro.server", "panic recovered: %v", r)
+				err = errors.InternalServerError(g.opts.Name+".subscriber", "panic recovered: %v", r)
 			}
 		}()
 
-		msg := p.Message()
 		// if we don't have headers, create empty map
 		if msg.Header == nil {
 			msg.Header = make(map[string]string)

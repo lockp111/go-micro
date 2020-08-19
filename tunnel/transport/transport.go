@@ -4,8 +4,9 @@ package transport
 import (
 	"context"
 
-	"github.com/micro/go-micro/v2/transport"
-	"github.com/micro/go-micro/v2/tunnel"
+	"github.com/micro/go-micro/v3/transport"
+	"github.com/micro/go-micro/v3/tunnel"
+	"github.com/micro/go-micro/v3/tunnel/mucp"
 )
 
 type tunTransport struct {
@@ -31,7 +32,7 @@ func (t *tunTransport) Init(opts ...transport.Option) error {
 	// get the tunnel
 	tun, ok := t.options.Context.Value(tunnelKey{}).(tunnel.Tunnel)
 	if !ok {
-		tun = tunnel.NewTunnel()
+		tun = mucp.NewTunnel()
 	}
 
 	// get the transport

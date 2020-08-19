@@ -6,15 +6,15 @@ import (
 	"crypto/tls"
 	"net"
 
-	"github.com/micro/go-micro/v2/transport"
-	maddr "github.com/micro/go-micro/v2/util/addr"
-	mnet "github.com/micro/go-micro/v2/util/net"
-	mls "github.com/micro/go-micro/v2/util/tls"
+	"github.com/micro/go-micro/v3/transport"
+	maddr "github.com/micro/go-micro/v3/util/addr"
+	mnet "github.com/micro/go-micro/v3/util/net"
+	mls "github.com/micro/go-micro/v3/util/tls"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
-	pb "github.com/micro/go-micro/v2/transport/grpc/proto"
+	pb "github.com/micro/go-micro/v3/transport/grpc/proto"
 )
 
 type grpcTransport struct {
@@ -94,9 +94,7 @@ func (t *grpcTransport) Dial(addr string, opts ...transport.DialOption) (transpo
 		opt(&dopts)
 	}
 
-	options := []grpc.DialOption{
-		grpc.WithTimeout(dopts.Timeout),
-	}
+	options := []grpc.DialOption{}
 
 	if t.opts.Secure || t.opts.TLSConfig != nil {
 		config := t.opts.TLSConfig
@@ -112,7 +110,9 @@ func (t *grpcTransport) Dial(addr string, opts ...transport.DialOption) (transpo
 	}
 
 	// dial the server
-	conn, err := grpc.Dial(addr, options...)
+	ctx, cancel := context.WithTimeout(context.Background(), dopts.Timeout)
+	defer cancel()
+	conn, err := grpc.DialContext(ctx, addr, options...)
 	if err != nil {
 		return nil, err
 	}

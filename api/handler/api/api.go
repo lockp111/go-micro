@@ -4,13 +4,13 @@ package api
 import (
 	"net/http"
 
-	goapi "github.com/micro/go-micro/v2/api"
-	"github.com/micro/go-micro/v2/api/handler"
-	api "github.com/micro/go-micro/v2/api/proto"
-	"github.com/micro/go-micro/v2/client"
-	"github.com/micro/go-micro/v2/client/selector"
-	"github.com/micro/go-micro/v2/errors"
-	"github.com/micro/go-micro/v2/util/ctx"
+	goapi "github.com/micro/go-micro/v3/api"
+	"github.com/micro/go-micro/v3/api/handler"
+	api "github.com/micro/go-micro/v3/api/proto"
+	"github.com/micro/go-micro/v3/client"
+	"github.com/micro/go-micro/v3/errors"
+	"github.com/micro/go-micro/v3/util/ctx"
+	"github.com/micro/go-micro/v3/util/router"
 )
 
 type apiHandler struct {
@@ -71,10 +71,8 @@ func (a *apiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// create the context from headers
 	cx := ctx.FromRequest(r)
-	// create strategy
-	so := selector.WithStrategy(strategy(service.Services))
 
-	if err := c.Call(cx, req, rsp, client.WithSelectOption(so)); err != nil {
+	if err := c.Call(cx, req, rsp, client.WithRouter(router.New(service.Services))); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		ce := errors.Parse(err.Error())
 		switch ce.Code {

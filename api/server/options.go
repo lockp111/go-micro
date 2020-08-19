@@ -4,8 +4,8 @@ import (
 	"crypto/tls"
 	"net/http"
 
-	"github.com/micro/go-micro/v2/api/resolver"
-	"github.com/micro/go-micro/v2/api/server/acme"
+	"github.com/micro/go-micro/v3/api/resolver"
+	"github.com/micro/go-micro/v3/api/server/acme"
 )
 
 type Option func(o *Options)
@@ -23,9 +23,9 @@ type Options struct {
 
 type Wrapper func(h http.Handler) http.Handler
 
-func WrapHandler(w Wrapper) Option {
+func WrapHandler(w ...Wrapper) Option {
 	return func(o *Options) {
-		o.Wrappers = append(o.Wrappers, w)
+		o.Wrappers = append(o.Wrappers, w...)
 	}
 }
 

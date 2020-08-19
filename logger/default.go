@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	dlog "github.com/micro/go-micro/v2/debug/log"
+	dlog "github.com/micro/go-micro/v3/debug/log"
 )
 
 func init() {
@@ -55,9 +54,28 @@ func copyFields(src map[string]interface{}) map[string]interface{} {
 	return dst
 }
 
+// logCallerfilePath returns a package/file:line description of the caller,
+// preserving only the leaf directory name and file name.
 func logCallerfilePath(loggingFilePath string) string {
-	parts := strings.Split(loggingFilePath, string(filepath.Separator))
-	return parts[len(parts)-1]
+	// To make sure we trim the path correctly on Windows too, we
+	// counter-intuitively need to use '/' and *not* os.PathSeparator here,
+	// because the path given originates from Go stdlib, specifically
+	// runtime.Caller() which (as of Mar/17) returns forward slashes even on
+	// Windows.
+	//
+	// See https://github.com/golang/go/issues/3335
+	// and https://github.com/golang/go/issues/18151
+	//
+	// for discussion on the issue on Go side.
+	idx := strings.LastIndexByte(loggingFilePath, '/')
+	if idx == -1 {
+		return loggingFilePath
+	}
+	idx = strings.LastIndexByte(loggingFilePath[:idx], '/')
+	if idx == -1 {
+		return loggingFilePath
+	}
+	return loggingFilePath[idx+1:]
 }
 
 func (l *defaultLogger) Log(level Level, v ...interface{}) {
@@ -94,8 +112,6 @@ func (l *defaultLogger) Log(level Level, v ...interface{}) {
 	for _, k := range keys {
 		metadata += fmt.Sprintf(" %s=%v", k, fields[k])
 	}
-
-	dlog.DefaultLog.Write(rec)
 
 	t := rec.Timestamp.Format("2006-01-02 15:04:05")
 	fmt.Printf("%s %s %v\n", t, metadata, rec.Message)
@@ -136,18 +152,16 @@ func (l *defaultLogger) Logf(level Level, format string, v ...interface{}) {
 		metadata += fmt.Sprintf(" %s=%v", k, fields[k])
 	}
 
-	dlog.DefaultLog.Write(rec)
-
 	t := rec.Timestamp.Format("2006-01-02 15:04:05")
 	fmt.Printf("%s %s %v\n", t, metadata, rec.Message)
 }
 
-func (n *defaultLogger) Options() Options {
+func (l *defaultLogger) Options() Options {
 	// not guard against options Context values
-	n.RLock()
-	opts := n.opts
-	opts.Fields = copyFields(n.opts.Fields)
-	n.RUnlock()
+	l.RLock()
+	opts := l.opts
+	opts.Fields = copyFields(l.opts.Fields)
+	l.RUnlock()
 	return opts
 }
 

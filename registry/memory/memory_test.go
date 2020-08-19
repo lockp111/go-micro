@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/micro/go-micro/v2/registry"
+	"github.com/micro/go-micro/v3/registry"
 )
 
 var (
@@ -242,5 +242,41 @@ func TestMemoryRegistryTTLConcurrent(t *testing.T) {
 		if err := <-errChan; err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func TestMemoryWildcard(t *testing.T) {
+	m := NewRegistry()
+	testSrv := &registry.Service{Name: "foo", Version: "1.0.0"}
+
+	if err := m.Register(testSrv, registry.RegisterDomain("one")); err != nil {
+		t.Fatalf("Register err: %v", err)
+	}
+	if err := m.Register(testSrv, registry.RegisterDomain("two")); err != nil {
+		t.Fatalf("Register err: %v", err)
+	}
+
+	if recs, err := m.ListServices(registry.ListDomain("one")); err != nil {
+		t.Errorf("List err: %v", err)
+	} else if len(recs) != 1 {
+		t.Errorf("Expected 1 record, got %v", len(recs))
+	}
+
+	if recs, err := m.ListServices(registry.ListDomain("*")); err != nil {
+		t.Errorf("List err: %v", err)
+	} else if len(recs) != 2 {
+		t.Errorf("Expected 2 records, got %v", len(recs))
+	}
+
+	if recs, err := m.GetService(testSrv.Name, registry.GetDomain("one")); err != nil {
+		t.Errorf("Get err: %v", err)
+	} else if len(recs) != 1 {
+		t.Errorf("Expected 1 record, got %v", len(recs))
+	}
+
+	if recs, err := m.GetService(testSrv.Name, registry.GetDomain("*")); err != nil {
+		t.Errorf("Get err: %v", err)
+	} else if len(recs) != 2 {
+		t.Errorf("Expected 2 records, got %v", len(recs))
 	}
 }

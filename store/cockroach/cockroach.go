@@ -11,7 +11,8 @@ import (
 	"time"
 
 	"github.com/lib/pq"
-	"github.com/micro/go-micro/v2/store"
+	"github.com/micro/go-micro/v3/logger"
+	"github.com/micro/go-micro/v3/store"
 	"github.com/pkg/errors"
 )
 
@@ -26,11 +27,11 @@ var (
 	re = regexp.MustCompile("[^a-zA-Z0-9]+")
 
 	statements = map[string]string{
-		"list":       "SELECT key, value, expiry FROM %s.%s;",
-		"read":       "SELECT key, value, expiry FROM %s.%s WHERE key = $1;",
-		"readMany":   "SELECT key, value, expiry FROM %s.%s WHERE key LIKE $1;",
-		"readOffset": "SELECT key, value, expiry FROM %s.%s WHERE key LIKE $1 ORDER BY key DESC LIMIT $2 OFFSET $3;",
-		"write":      "INSERT INTO %s.%s(key, value, expiry) VALUES ($1, $2::bytea, $3) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, expiry = EXCLUDED.expiry;",
+		"list":       "SELECT key, value, metadata, expiry FROM %s.%s;",
+		"read":       "SELECT key, value, metadata, expiry FROM %s.%s WHERE key = $1;",
+		"readMany":   "SELECT key, value, metadata, expiry FROM %s.%s WHERE key LIKE $1;",
+		"readOffset": "SELECT key, value, metadata, expiry FROM %s.%s WHERE key LIKE $1 ORDER BY key DESC LIMIT $2 OFFSET $3;",
+		"write":      "INSERT INTO %s.%s(key, value, metadata, expiry) VALUES ($1, $2::bytea, $3, $4) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, metadata = EXCLUDED.metadata, expiry = EXCLUDED.expiry;",
 		"delete":     "DELETE FROM %s.%s WHERE key = $1;",
 	}
 )
@@ -57,7 +58,7 @@ func (s *sqlStore) getDB(database, table string) (string, string) {
 		if len(s.options.Table) > 0 {
 			table = s.options.Table
 		} else {
-			database = DefaultTable
+			table = DefaultTable
 		}
 	}
 
@@ -68,19 +69,29 @@ func (s *sqlStore) getDB(database, table string) (string, string) {
 	return database, table
 }
 
-func (s *sqlStore) createDB(database, table string) {
+func (s *sqlStore) createDB(database, table string) error {
 	database, table = s.getDB(database, table)
 
 	s.Lock()
-	_, ok := s.databases[database+":"+table]
-	if !ok {
-		s.initDB(database, table)
-		s.databases[database+":"+table] = true
+	defer s.Unlock()
+
+	if _, ok := s.databases[database+":"+table]; ok {
+		return nil
 	}
-	s.Unlock()
+
+	if err := s.initDB(database, table); err != nil {
+		return err
+	}
+
+	s.databases[database+":"+table] = true
+	return nil
 }
 
 func (s *sqlStore) initDB(database, table string) error {
+	if s.db == nil {
+		return errors.New("Database connection not initialised")
+	}
+
 	// Create the namespace's database
 	_, err := s.db.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s;", database))
 	if err != nil {
@@ -97,6 +108,7 @@ func (s *sqlStore) initDB(database, table string) error {
 	(
 		key text NOT NULL,
 		value bytea,
+		metadata JSONB,
 		expiry timestamp with time zone,
 		CONSTRAINT %s_pkey PRIMARY KEY (key)
 	);`, table, table))
@@ -106,6 +118,12 @@ func (s *sqlStore) initDB(database, table string) error {
 
 	// Create Index
 	_, err = s.db.Exec(fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s" ON %s.%s USING btree ("key");`, "key_index_"+table, database, table))
+	if err != nil {
+		return err
+	}
+
+	// Create Metadata Index
+	_, err = s.db.Exec(fmt.Sprintf(`CREATE INDEX IF NOT EXISTS "%s" ON %s.%s USING GIN ("metadata");`, "metadata_index_"+table, database, table))
 	if err != nil {
 		return err
 	}
@@ -192,7 +210,9 @@ func (s *sqlStore) List(opts ...store.ListOption) ([]string, error) {
 	}
 
 	// create the db if not exists
-	s.createDB(options.Database, options.Table)
+	if err := s.createDB(options.Database, options.Table); err != nil {
+		return nil, err
+	}
 
 	st, err := s.prepare(options.Database, options.Table, "list")
 	if err != nil {
@@ -214,9 +234,15 @@ func (s *sqlStore) List(opts ...store.ListOption) ([]string, error) {
 
 	for rows.Next() {
 		record := &store.Record{}
-		if err := rows.Scan(&record.Key, &record.Value, &timehelper); err != nil {
+		metadata := make(Metadata)
+
+		if err := rows.Scan(&record.Key, &record.Value, &metadata, &timehelper); err != nil {
 			return keys, err
 		}
+
+		// set the metadata
+		record.Metadata = toMetadata(&metadata)
+
 		if timehelper.Valid {
 			if timehelper.Time.Before(time.Now()) {
 				// record has expired
@@ -249,7 +275,9 @@ func (s *sqlStore) Read(key string, opts ...store.ReadOption) ([]*store.Record, 
 	}
 
 	// create the db if not exists
-	s.createDB(options.Database, options.Table)
+	if err := s.createDB(options.Database, options.Table); err != nil {
+		return nil, err
+	}
 
 	if options.Prefix || options.Suffix {
 		return s.read(key, options)
@@ -266,12 +294,18 @@ func (s *sqlStore) Read(key string, opts ...store.ReadOption) ([]*store.Record, 
 
 	row := st.QueryRow(key)
 	record := &store.Record{}
-	if err := row.Scan(&record.Key, &record.Value, &timehelper); err != nil {
+	metadata := make(Metadata)
+
+	if err := row.Scan(&record.Key, &record.Value, &metadata, &timehelper); err != nil {
 		if err == sql.ErrNoRows {
 			return records, store.ErrNotFound
 		}
 		return records, err
 	}
+
+	// set the metadata
+	record.Metadata = toMetadata(&metadata)
+
 	if timehelper.Valid {
 		if timehelper.Time.Before(time.Now()) {
 			// record has expired
@@ -298,10 +332,11 @@ func (s *sqlStore) read(key string, options store.ReadOptions) ([]*store.Record,
 	}
 
 	var rows *sql.Rows
+	var st *sql.Stmt
 	var err error
 
 	if options.Limit != 0 {
-		st, err := s.prepare(options.Database, options.Table, "readOffset")
+		st, err = s.prepare(options.Database, options.Table, "readOffset")
 		if err != nil {
 			return nil, err
 		}
@@ -309,7 +344,7 @@ func (s *sqlStore) read(key string, options store.ReadOptions) ([]*store.Record,
 
 		rows, err = st.Query(pattern, options.Limit, options.Offset)
 	} else {
-		st, err := s.prepare(options.Database, options.Table, "readMany")
+		st, err = s.prepare(options.Database, options.Table, "readMany")
 		if err != nil {
 			return nil, err
 		}
@@ -331,9 +366,15 @@ func (s *sqlStore) read(key string, options store.ReadOptions) ([]*store.Record,
 
 	for rows.Next() {
 		record := &store.Record{}
-		if err := rows.Scan(&record.Key, &record.Value, &timehelper); err != nil {
+		metadata := make(Metadata)
+
+		if err := rows.Scan(&record.Key, &record.Value, &metadata, &timehelper); err != nil {
 			return records, err
 		}
+
+		// set the metadata
+		record.Metadata = toMetadata(&metadata)
+
 		if timehelper.Valid {
 			if timehelper.Time.Before(time.Now()) {
 				// record has expired
@@ -366,7 +407,9 @@ func (s *sqlStore) Write(r *store.Record, opts ...store.WriteOption) error {
 	}
 
 	// create the db if not exists
-	s.createDB(options.Database, options.Table)
+	if err := s.createDB(options.Database, options.Table); err != nil {
+		return err
+	}
 
 	st, err := s.prepare(options.Database, options.Table, "write")
 	if err != nil {
@@ -374,10 +417,26 @@ func (s *sqlStore) Write(r *store.Record, opts ...store.WriteOption) error {
 	}
 	defer st.Close()
 
-	if r.Expiry != 0 {
-		_, err = st.Exec(r.Key, r.Value, time.Now().Add(r.Expiry))
+	metadata := make(Metadata)
+	for k, v := range r.Metadata {
+		metadata[k] = v
+	}
+
+	var expiry time.Time
+	// expiry from options takes precedence
+	if !options.Expiry.IsZero() {
+		expiry = options.Expiry
+	} else if r.Expiry != 0 {
+		expiry = time.Now().Add(r.Expiry)
+	}
+	if options.TTL != 0 {
+		expiry = time.Now().Add(options.TTL)
+	}
+
+	if expiry.IsZero() {
+		_, err = st.Exec(r.Key, r.Value, metadata, nil)
 	} else {
-		_, err = st.Exec(r.Key, r.Value, nil)
+		_, err = st.Exec(r.Key, r.Value, metadata, expiry)
 	}
 
 	if err != nil {
@@ -395,7 +454,9 @@ func (s *sqlStore) Delete(key string, opts ...store.DeleteOption) error {
 	}
 
 	// create the db if not exists
-	s.createDB(options.Database, options.Table)
+	if err := s.createDB(options.Database, options.Table); err != nil {
+		return err
+	}
 
 	st, err := s.prepare(options.Database, options.Table, "delete")
 	if err != nil {
@@ -442,7 +503,11 @@ func NewStore(opts ...store.Option) store.Store {
 	// mark known databases
 	s.databases = make(map[string]bool)
 	// best-effort configure the store
-	s.configure()
+	if err := s.configure(); err != nil {
+		if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
+			logger.Error("Error configuring store ", err)
+		}
+	}
 
 	// return store
 	return s

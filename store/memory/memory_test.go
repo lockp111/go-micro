@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/kr/pretty"
-	"github.com/micro/go-micro/v2/store"
+	"github.com/micro/go-micro/v3/store"
 )
 
 func TestMemoryReInit(t *testing.T) {
@@ -248,7 +248,7 @@ func basictest(s store.Store, t *testing.T) {
 		}
 	}
 
-	s.Init()
+	s.Close() // reset the store
 	for i := 0; i < 10; i++ {
 		s.Write(&store.Record{
 			Key:   fmt.Sprintf("a%d", i),

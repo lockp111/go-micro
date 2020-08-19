@@ -7,10 +7,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/micro/go-micro/v2/store"
+	"github.com/micro/go-micro/v3/store"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -27,11 +26,9 @@ var (
 	dataBucket = "data"
 )
 
-// NewStore returns a memory store
+// NewStore returns a file store
 func NewStore(opts ...store.Option) store.Store {
-	s := &fileStore{
-		handles: make(map[string]*fileHandle),
-	}
+	s := &fileStore{}
 	s.init(opts...)
 	return s
 }
@@ -39,10 +36,6 @@ func NewStore(opts ...store.Option) store.Store {
 type fileStore struct {
 	options store.Options
 	dir     string
-
-	// the database handle
-	sync.RWMutex
-	handles map[string]*fileHandle
 }
 
 type fileHandle struct {
@@ -54,6 +47,7 @@ type fileHandle struct {
 type record struct {
 	Key       string
 	Value     []byte
+	Metadata  map[string]interface{}
 	ExpiresAt time.Time
 }
 
@@ -61,8 +55,8 @@ func key(database, table string) string {
 	return database + ":" + table
 }
 
-func (m *fileStore) delete(fd *fileHandle, key string) error {
-	return fd.db.Update(func(tx *bolt.Tx) error {
+func (m *fileStore) delete(db *bolt.DB, key string) error {
+	return db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(dataBucket))
 		if b == nil {
 			return nil
@@ -95,23 +89,12 @@ func (m *fileStore) init(opts ...store.Option) error {
 	return nil
 }
 
-func (f *fileStore) getDB(database, table string) (*fileHandle, error) {
+func (f *fileStore) getDB(database, table string) (*bolt.DB, error) {
 	if len(database) == 0 {
 		database = f.options.Database
 	}
 	if len(table) == 0 {
 		table = f.options.Table
-	}
-
-	k := key(database, table)
-
-	f.RLock()
-	fd, ok := f.handles[k]
-	f.RUnlock()
-
-	// return the file handle
-	if ok {
-		return fd, nil
 	}
 
 	// create a directory /tmp/micro
@@ -124,26 +107,14 @@ func (f *fileStore) getDB(database, table string) (*fileHandle, error) {
 	dbPath := filepath.Join(dir, fname)
 
 	// create new db handle
-	db, err := bolt.Open(dbPath, 0700, &bolt.Options{Timeout: 5 * time.Second})
-	if err != nil {
-		return nil, err
-	}
-
-	f.Lock()
-	fd = &fileHandle{
-		key: k,
-		db:  db,
-	}
-	f.handles[k] = fd
-	f.Unlock()
-
-	return fd, nil
+	// Bolt DB only allows one process to open the file R/W so make sure we're doing this under a lock
+	return bolt.Open(dbPath, 0700, &bolt.Options{Timeout: 5 * time.Second})
 }
 
-func (m *fileStore) list(fd *fileHandle, limit, offset uint) []string {
+func (m *fileStore) list(db *bolt.DB, limit, offset uint) []string {
 	var allItems []string
 
-	fd.db.View(func(tx *bolt.Tx) error {
+	db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(dataBucket))
 		// nothing to read
 		if b == nil {
@@ -194,10 +165,10 @@ func (m *fileStore) list(fd *fileHandle, limit, offset uint) []string {
 	return allKeys
 }
 
-func (m *fileStore) get(fd *fileHandle, k string) (*store.Record, error) {
+func (m *fileStore) get(db *bolt.DB, k string) (*store.Record, error) {
 	var value []byte
 
-	fd.db.View(func(tx *bolt.Tx) error {
+	db.View(func(tx *bolt.Tx) error {
 		// @todo this is still very experimental...
 		b := tx.Bucket([]byte(dataBucket))
 		if b == nil {
@@ -221,6 +192,11 @@ func (m *fileStore) get(fd *fileHandle, k string) (*store.Record, error) {
 	newRecord := &store.Record{}
 	newRecord.Key = storedRecord.Key
 	newRecord.Value = storedRecord.Value
+	newRecord.Metadata = make(map[string]interface{})
+
+	for k, v := range storedRecord.Metadata {
+		newRecord.Metadata[k] = v
+	}
 
 	if !storedRecord.ExpiresAt.IsZero() {
 		if storedRecord.ExpiresAt.Before(time.Now()) {
@@ -232,20 +208,26 @@ func (m *fileStore) get(fd *fileHandle, k string) (*store.Record, error) {
 	return newRecord, nil
 }
 
-func (m *fileStore) set(fd *fileHandle, r *store.Record) error {
+func (m *fileStore) set(db *bolt.DB, r *store.Record) error {
 	// copy the incoming record and then
 	// convert the expiry in to a hard timestamp
 	item := &record{}
 	item.Key = r.Key
 	item.Value = r.Value
+	item.Metadata = make(map[string]interface{})
+
 	if r.Expiry != 0 {
 		item.ExpiresAt = time.Now().Add(r.Expiry)
+	}
+
+	for k, v := range r.Metadata {
+		item.Metadata[k] = v
 	}
 
 	// marshal the data
 	data, _ := json.Marshal(item)
 
-	return fd.db.Update(func(tx *bolt.Tx) error {
+	return db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket([]byte(dataBucket))
 		if b == nil {
 			var err error
@@ -259,12 +241,6 @@ func (m *fileStore) set(fd *fileHandle, r *store.Record) error {
 }
 
 func (f *fileStore) Close() error {
-	f.Lock()
-	defer f.Unlock()
-	for k, v := range f.handles {
-		v.db.Close()
-		delete(f.handles, k)
-	}
 	return nil
 }
 
@@ -278,12 +254,13 @@ func (m *fileStore) Delete(key string, opts ...store.DeleteOption) error {
 		o(&deleteOptions)
 	}
 
-	fd, err := m.getDB(deleteOptions.Database, deleteOptions.Table)
+	db, err := m.getDB(deleteOptions.Database, deleteOptions.Table)
 	if err != nil {
 		return err
 	}
+	defer db.Close()
 
-	return m.delete(fd, key)
+	return m.delete(db, key)
 }
 
 func (m *fileStore) Read(key string, opts ...store.ReadOption) ([]*store.Record, error) {
@@ -292,10 +269,11 @@ func (m *fileStore) Read(key string, opts ...store.ReadOption) ([]*store.Record,
 		o(&readOpts)
 	}
 
-	fd, err := m.getDB(readOpts.Database, readOpts.Table)
+	db, err := m.getDB(readOpts.Database, readOpts.Table)
 	if err != nil {
 		return nil, err
 	}
+	defer db.Close()
 
 	var keys []string
 
@@ -303,7 +281,7 @@ func (m *fileStore) Read(key string, opts ...store.ReadOption) ([]*store.Record,
 	// TODO: do range scan here rather than listing all keys
 	if readOpts.Prefix || readOpts.Suffix {
 		// list the keys
-		k := m.list(fd, readOpts.Limit, readOpts.Offset)
+		k := m.list(db, readOpts.Limit, readOpts.Offset)
 
 		// check for prefix and suffix
 		for _, v := range k {
@@ -322,7 +300,7 @@ func (m *fileStore) Read(key string, opts ...store.ReadOption) ([]*store.Record,
 	var results []*store.Record
 
 	for _, k := range keys {
-		r, err := m.get(fd, k)
+		r, err := m.get(db, k)
 		if err != nil {
 			return results, err
 		}
@@ -338,16 +316,18 @@ func (m *fileStore) Write(r *store.Record, opts ...store.WriteOption) error {
 		o(&writeOpts)
 	}
 
-	fd, err := m.getDB(writeOpts.Database, writeOpts.Table)
+	db, err := m.getDB(writeOpts.Database, writeOpts.Table)
 	if err != nil {
 		return err
 	}
+	defer db.Close()
 
 	if len(opts) > 0 {
 		// Copy the record before applying options, or the incoming record will be mutated
 		newRecord := store.Record{}
 		newRecord.Key = r.Key
 		newRecord.Value = r.Value
+		newRecord.Metadata = make(map[string]interface{})
 		newRecord.Expiry = r.Expiry
 
 		if !writeOpts.Expiry.IsZero() {
@@ -357,10 +337,14 @@ func (m *fileStore) Write(r *store.Record, opts ...store.WriteOption) error {
 			newRecord.Expiry = writeOpts.TTL
 		}
 
-		return m.set(fd, &newRecord)
+		for k, v := range r.Metadata {
+			newRecord.Metadata[k] = v
+		}
+
+		return m.set(db, &newRecord)
 	}
 
-	return m.set(fd, r)
+	return m.set(db, r)
 }
 
 func (m *fileStore) Options() store.Options {
@@ -374,13 +358,14 @@ func (m *fileStore) List(opts ...store.ListOption) ([]string, error) {
 		o(&listOptions)
 	}
 
-	fd, err := m.getDB(listOptions.Database, listOptions.Table)
+	db, err := m.getDB(listOptions.Database, listOptions.Table)
 	if err != nil {
 		return nil, err
 	}
+	defer db.Close()
 
 	// TODO apply prefix/suffix in range query
-	allKeys := m.list(fd, listOptions.Limit, listOptions.Offset)
+	allKeys := m.list(db, listOptions.Limit, listOptions.Offset)
 
 	if len(listOptions.Prefix) > 0 {
 		var prefixKeys []string

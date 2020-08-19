@@ -2,12 +2,14 @@ package kubernetes
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
+	"time"
 
-	"github.com/micro/go-micro/v2/logger"
-	"github.com/micro/go-micro/v2/runtime"
-	"github.com/micro/go-micro/v2/util/kubernetes/api"
-	"github.com/micro/go-micro/v2/util/kubernetes/client"
+	"github.com/micro/go-micro/v3/logger"
+	"github.com/micro/go-micro/v3/runtime"
+	"github.com/micro/go-micro/v3/util/kubernetes/api"
+	"github.com/micro/go-micro/v3/util/kubernetes/client"
 )
 
 type service struct {
@@ -74,6 +76,19 @@ func newService(s *runtime.Service, c runtime.CreateOptions) *service {
 		env = append(env, client.EnvVar{Name: evarPair[0], Value: evarPair[1]})
 	}
 
+	// if secrets were provided, pass them to the service
+	for key := range c.Secrets {
+		env = append(env, client.EnvVar{
+			Name: key,
+			ValueFrom: &client.EnvVarSource{
+				SecretKeyRef: &client.SecretKeySelector{
+					Name: credentialsName(s),
+					Key:  key,
+				},
+			},
+		})
+	}
+
 	// if environment has been supplied update deployment default environment
 	if len(env) > 0 {
 		kdeploy.Spec.Template.PodSpec.Containers[0].Env = append(kdeploy.Spec.Template.PodSpec.Containers[0].Env, env...)
@@ -86,6 +101,22 @@ func newService(s *runtime.Service, c runtime.CreateOptions) *service {
 
 	if len(c.Args) > 0 {
 		kdeploy.Spec.Template.PodSpec.Containers[0].Args = c.Args
+	}
+
+	// apply resource limits
+	if c.Resources != nil {
+		resLimits := &client.ResourceLimits{}
+		if c.Resources.CPU > 0 {
+			resLimits.CPU = fmt.Sprintf("%vm", c.Resources.CPU)
+		}
+		if c.Resources.Mem > 0 {
+			resLimits.Memory = fmt.Sprintf("%vMi", c.Resources.Mem)
+		}
+		if c.Resources.Disk > 0 {
+			resLimits.EphemeralStorage = fmt.Sprintf("%vMi", c.Resources.Disk)
+		}
+
+		kdeploy.Spec.Template.PodSpec.Containers[0].Resources = &client.ResourceRequirements{Limits: resLimits}
 	}
 
 	return &service{
@@ -185,8 +216,10 @@ func (s *service) Update(k client.Client, opts ...client.UpdateOption) error {
 }
 
 func (s *service) Status(status string, err error) {
+	s.Metadata["lastStatusUpdate"] = time.Now().Format(time.RFC3339)
 	if err == nil {
 		s.Metadata["status"] = status
+		delete(s.Metadata, "error")
 		return
 	}
 	s.Metadata["status"] = "error"

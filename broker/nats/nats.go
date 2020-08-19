@@ -7,10 +7,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/micro/go-micro/v2/broker"
-	"github.com/micro/go-micro/v2/codec/json"
-	"github.com/micro/go-micro/v2/logger"
-	"github.com/micro/go-micro/v2/registry"
+	"github.com/micro/go-micro/v3/broker"
+	"github.com/micro/go-micro/v3/codec/json"
+	"github.com/micro/go-micro/v3/logger"
+	"github.com/micro/go-micro/v3/registry/mdns"
 	nats "github.com/nats-io/nats.go"
 )
 
@@ -34,29 +34,6 @@ type natsBroker struct {
 type subscriber struct {
 	s    *nats.Subscription
 	opts broker.SubscribeOptions
-}
-
-type publication struct {
-	t   string
-	err error
-	m   *broker.Message
-}
-
-func (p *publication) Topic() string {
-	return p.t
-}
-
-func (p *publication) Message() *broker.Message {
-	return p.m
-}
-
-func (p *publication) Ack() error {
-	// nats does not support acking
-	return nil
-}
-
-func (p *publication) Error() error {
-	return p.err
 }
 
 func (s *subscriber) Options() broker.SubscribeOptions {
@@ -131,6 +108,10 @@ func (n *natsBroker) Connect() error {
 
 		c, err := opts.Connect()
 		if err != nil {
+			if logger.V(logger.WarnLevel, logger.DefaultLogger) {
+				logger.Warnf("Error connecting to broker: %v", err)
+			}
+
 			return err
 		}
 		n.conn = c
@@ -191,7 +172,6 @@ func (n *natsBroker) Subscribe(topic string, handler broker.Handler, opts ...bro
 	n.RUnlock()
 
 	opt := broker.SubscribeOptions{
-		AutoAck: true,
 		Context: context.Background(),
 	}
 
@@ -200,29 +180,25 @@ func (n *natsBroker) Subscribe(topic string, handler broker.Handler, opts ...bro
 	}
 
 	fn := func(msg *nats.Msg) {
-		var m broker.Message
-		pub := &publication{t: msg.Subject}
-		eh := n.opts.ErrorHandler
+		var m *broker.Message
+		eh := opt.ErrorHandler
 		err := n.opts.Codec.Unmarshal(msg.Data, &m)
-		pub.err = err
-		pub.m = &m
 		if err != nil {
 			m.Body = msg.Data
 			if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
 				logger.Error(err)
 			}
 			if eh != nil {
-				eh(pub)
+				eh(m, err)
 			}
 			return
 		}
-		if err := handler(pub); err != nil {
-			pub.err = err
+		if err := handler(m); err != nil {
 			if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
 				logger.Error(err)
 			}
 			if eh != nil {
-				eh(pub)
+				eh(m, err)
 			}
 		}
 	}
@@ -306,7 +282,7 @@ func NewBroker(opts ...broker.Option) broker.Broker {
 		// Default codec
 		Codec:    json.Marshaler{},
 		Context:  context.Background(),
-		Registry: registry.DefaultRegistry,
+		Registry: mdns.NewRegistry(),
 	}
 
 	n := &natsBroker{

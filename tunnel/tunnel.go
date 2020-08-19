@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/micro/go-micro/v2/transport"
+	"github.com/micro/go-micro/v3/transport"
 )
 
 const (
@@ -99,9 +99,4 @@ type Session interface {
 	Link() string
 	// a transport socket
 	transport.Socket
-}
-
-// NewTunnel creates a new tunnel
-func NewTunnel(opts ...Option) Tunnel {
-	return newTunnel(opts...)
 }

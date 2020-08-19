@@ -2,13 +2,16 @@
 package kubernetes
 
 import (
+	"encoding/base64"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
-	log "github.com/micro/go-micro/v2/logger"
-	"github.com/micro/go-micro/v2/runtime"
-	"github.com/micro/go-micro/v2/util/kubernetes/client"
+	"github.com/micro/go-micro/v3/logger"
+	log "github.com/micro/go-micro/v3/logger"
+	"github.com/micro/go-micro/v3/runtime"
+	"github.com/micro/go-micro/v3/util/kubernetes/client"
 )
 
 // action to take on runtime service
@@ -32,10 +35,18 @@ type kubernetes struct {
 func (k *kubernetes) namespaceExists(name string) (bool, error) {
 	// populate the cache
 	if k.namespaces == nil {
+		if logger.V(logger.DebugLevel, logger.DefaultLogger) {
+			logger.Debugf("Populating namespace cache")
+		}
+
 		namespaceList := new(client.NamespaceList)
 		resource := &client.Resource{Kind: "namespace", Value: namespaceList}
 		if err := k.client.List(resource); err != nil {
 			return false, err
+		}
+
+		if logger.V(logger.DebugLevel, logger.DefaultLogger) {
+			logger.Debugf("Popualted namespace cache successfully with %v items", len(namespaceList.Items))
 		}
 		k.namespaces = namespaceList.Items
 	}
@@ -54,6 +65,12 @@ func (k *kubernetes) namespaceExists(name string) (bool, error) {
 func (k *kubernetes) createNamespace(namespace string) error {
 	ns := client.Namespace{Metadata: &client.Metadata{Name: namespace}}
 	err := k.client.Create(&client.Resource{Kind: "namespace", Value: ns})
+
+	// ignore err already exists
+	if err != nil && strings.Contains(err.Error(), "already exists") {
+		logger.Debugf("Ignoring ErrAlreadyExists for namespace %v: %v", namespace, err)
+		err = nil
+	}
 
 	// add to cache
 	if err == nil && k.namespaces != nil {
@@ -167,11 +184,10 @@ func (k *kubernetes) getService(labels map[string]string, opts ...client.GetOpti
 
 			// parse out deployment status and inject into service metadata
 			if len(kdep.Status.Conditions) > 0 {
-				svc.Metadata["status"] = kdep.Status.Conditions[0].Type
+				svc.Status(kdep.Status.Conditions[0].Type, nil)
 				svc.Metadata["started"] = kdep.Status.Conditions[0].LastUpdateTime
-				delete(svc.Metadata, "error")
 			} else {
-				svc.Metadata["status"] = "n/a"
+				svc.Status("n/a", nil)
 			}
 
 			// get the real status
@@ -214,8 +230,7 @@ func (k *kubernetes) getService(labels map[string]string, opts ...client.GetOpti
 					}
 				}
 				// TODO: set from terminated
-
-				svc.Metadata["status"] = status
+				svc.Status(status, nil)
 			}
 
 			// save deployment
@@ -252,12 +267,12 @@ func (k *kubernetes) run(events <-chan runtime.Event) {
 			case runtime.Update:
 				// only process if there's an actual service
 				// we do not update all the things individually
-				if len(event.Service) == 0 {
+				if event.Service == nil {
 					continue
 				}
 
 				// format the name
-				name := client.Format(event.Service)
+				name := client.Format(event.Service.Name)
 
 				// set the default labels
 				labels := map[string]string{
@@ -265,8 +280,8 @@ func (k *kubernetes) run(events <-chan runtime.Event) {
 					"name":  name,
 				}
 
-				if len(event.Version) > 0 {
-					labels["version"] = event.Version
+				if len(event.Service.Version) > 0 {
+					labels["version"] = event.Service.Version
 				}
 
 				// get the deployment status
@@ -332,34 +347,37 @@ func (k *kubernetes) Init(opts ...runtime.Option) error {
 	return nil
 }
 
-func (k *kubernetes) Logs(s *runtime.Service, options ...runtime.LogsOption) (runtime.LogStream, error) {
+func (k *kubernetes) Logs(s *runtime.Service, options ...runtime.LogsOption) (runtime.Logs, error) {
 	klo := newLog(k.client, s.Name, options...)
+
+	if !klo.options.Stream {
+		records, err := klo.Read()
+		if err != nil {
+			log.Errorf("Failed to get logs for service '%v' from k8s: %v", s.Name, err)
+			return nil, err
+		}
+		kstream := &kubeStream{
+			stream: make(chan runtime.Log),
+			stop:   make(chan bool),
+		}
+		go func() {
+			for _, record := range records {
+				kstream.Chan() <- record
+			}
+			kstream.Stop()
+		}()
+		return kstream, nil
+	}
 	stream, err := klo.Stream()
 	if err != nil {
 		return nil, err
-	}
-	// If requested, also read existing records and stream those too
-	if klo.options.Count > 0 {
-		go func() {
-			records, err := klo.Read()
-			if err != nil {
-				log.Errorf("Failed to get logs for service '%v' from k8s: %v", err)
-				return
-			}
-			// @todo: this might actually not run before podLogStream starts
-			// and might cause out of order log retrieval at the receiving end.
-			// A better approach would probably to suppor this inside the `klog.Stream` method.
-			for _, record := range records {
-				stream.Chan() <- record
-			}
-		}()
 	}
 	return stream, nil
 }
 
 type kubeStream struct {
 	// the k8s log stream
-	stream chan runtime.LogRecord
+	stream chan runtime.Log
 	// the stop chan
 	sync.Mutex
 	stop chan bool
@@ -370,7 +388,7 @@ func (k *kubeStream) Error() error {
 	return k.err
 }
 
-func (k *kubeStream) Chan() chan runtime.LogRecord {
+func (k *kubeStream) Chan() chan runtime.Log {
 	return k.stream
 }
 
@@ -416,15 +434,34 @@ func (k *kubernetes) Create(s *runtime.Service, opts ...runtime.CreateOption) er
 	if namespace != "default" {
 		if exist, err := k.namespaceExists(namespace); err == nil && !exist {
 			if err := k.createNamespace(namespace); err != nil {
+				if logger.V(logger.WarnLevel, logger.DefaultLogger) {
+					logger.Warnf("Error creating namespacr %v: %v", namespace, err)
+				}
 				return err
 			}
 		} else if err != nil {
+			if logger.V(logger.WarnLevel, logger.DefaultLogger) {
+				logger.Warnf("Error checking namespace %v exists: %v", namespace, err)
+			}
 			return err
 		}
 	}
-
 	// determine the image from the source and options
 	options.Image = k.getImage(s, options)
+
+	// create a secret for the credentials if some where provided
+	if len(options.Secrets) > 0 {
+		if err := k.createCredentials(s, options); err != nil {
+			if logger.V(logger.WarnLevel, logger.DefaultLogger) {
+				logger.Warnf("Error generating auth credentials for service: %v", err)
+			}
+			return err
+		}
+
+		if logger.V(logger.DebugLevel, logger.DefaultLogger) {
+			logger.Debugf("Generated auth credentials for service %v", s.Name)
+		}
+	}
 
 	// create new service
 	service := newService(s, options)
@@ -496,7 +533,7 @@ func (k *kubernetes) Update(s *runtime.Service, opts ...runtime.UpdateOption) er
 	}
 
 	// get the existing service
-	services, err := k.getService(labels)
+	services, err := k.getService(labels, client.GetNamespace(options.Namespace))
 	if err != nil {
 		return err
 	}
@@ -532,7 +569,6 @@ func (k *kubernetes) Delete(s *runtime.Service, opts ...runtime.DeleteOption) er
 	options := runtime.DeleteOptions{
 		Namespace: client.DefaultNamespace,
 	}
-
 	for _, o := range opts {
 		o(&options)
 	}
@@ -546,7 +582,11 @@ func (k *kubernetes) Delete(s *runtime.Service, opts ...runtime.DeleteOption) er
 		Namespace: options.Namespace,
 	})
 
-	return service.Stop(k.client, client.DeleteNamespace(options.Namespace))
+	// delete the service credentials
+	ns := client.DeleteNamespace(options.Namespace)
+	k.client.Delete(&client.Resource{Name: credentialsName(s), Kind: "secret"}, ns)
+
+	return service.Stop(k.client, ns)
 }
 
 // Start starts the runtime
@@ -644,4 +684,31 @@ func (k *kubernetes) getImage(s *runtime.Service, options runtime.CreateOptions)
 	}
 
 	return ""
+}
+func (k *kubernetes) createCredentials(service *runtime.Service, options runtime.CreateOptions) error {
+	data := make(map[string]string, len(options.Secrets))
+	for key, value := range options.Secrets {
+		data[key] = base64.StdEncoding.EncodeToString([]byte(value))
+	}
+
+	// construct the k8s secret object
+	secret := &client.Secret{
+		Type: "Opaque",
+		Data: data,
+		Metadata: &client.Metadata{
+			Name:      credentialsName(service),
+			Namespace: options.Namespace,
+		},
+	}
+
+	// crete the secret in kubernetes
+	name := credentialsName(service)
+	return k.client.Create(&client.Resource{
+		Kind: "secret", Name: name, Value: secret,
+	}, client.CreateNamespace(options.Namespace))
+}
+
+func credentialsName(service *runtime.Service) string {
+	name := fmt.Sprintf("%v-%v-credentials", service.Name, service.Version)
+	return client.SerializeResourceName(name)
 }

@@ -9,9 +9,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/micro/go-micro/v2/runtime"
-	"github.com/micro/go-micro/v2/util/kubernetes/client"
-	"github.com/micro/go-micro/v2/util/log"
+	"github.com/micro/go-micro/v3/errors"
+	"github.com/micro/go-micro/v3/runtime"
+	"github.com/micro/go-micro/v3/util/kubernetes/client"
+	"github.com/micro/go-micro/v3/util/log"
 )
 
 type klog struct {
@@ -20,7 +21,7 @@ type klog struct {
 	options     runtime.LogsOptions
 }
 
-func (k *klog) podLogStream(podName string, stream *kubeStream) error {
+func (k *klog) podLogs(podName string, stream *kubeStream) error {
 	p := make(map[string]string)
 	p["follow"] = "true"
 
@@ -50,10 +51,14 @@ func (k *klog) podLogStream(podName string, stream *kubeStream) error {
 			return stream.Error()
 		default:
 			if s.Scan() {
-				record := runtime.LogRecord{
+				record := runtime.Log{
 					Message: s.Text(),
 				}
-				stream.stream <- record
+				select {
+				case stream.stream <- record:
+				case <-stream.stop:
+					return stream.Error()
+				}
 			} else {
 				// TODO: is there a blocking call
 				// rather than a sleep loop?
@@ -96,13 +101,16 @@ func (k *klog) getMatchingPods() ([]string, error) {
 	return matches, nil
 }
 
-func (k *klog) Read() ([]runtime.LogRecord, error) {
+func (k *klog) Read() ([]runtime.Log, error) {
 	pods, err := k.getMatchingPods()
 	if err != nil {
 		return nil, err
 	}
+	if len(pods) == 0 {
+		return nil, errors.NotFound("runtime.logs", "no such service")
+	}
 
-	var records []runtime.LogRecord
+	var records []runtime.Log
 
 	for _, pod := range pods {
 		logParams := make(map[string]string)
@@ -137,7 +145,7 @@ func (k *klog) Read() ([]runtime.LogRecord, error) {
 		s := bufio.NewScanner(logs)
 
 		for s.Scan() {
-			record := runtime.LogRecord{
+			record := runtime.Log{
 				Message: s.Text(),
 			}
 			// record.Metadata["pod"] = pod
@@ -151,22 +159,25 @@ func (k *klog) Read() ([]runtime.LogRecord, error) {
 	return records, nil
 }
 
-func (k *klog) Stream() (runtime.LogStream, error) {
+func (k *klog) Stream() (runtime.Logs, error) {
 	// find the matching pods
 	pods, err := k.getMatchingPods()
 	if err != nil {
 		return nil, err
 	}
+	if len(pods) == 0 {
+		return nil, errors.NotFound("runtime.logs", "no such service")
+	}
 
 	stream := &kubeStream{
-		stream: make(chan runtime.LogRecord),
+		stream: make(chan runtime.Log),
 		stop:   make(chan bool),
 	}
 
 	// stream from the individual pods
 	for _, pod := range pods {
 		go func(podName string) {
-			err := k.podLogStream(podName, stream)
+			err := k.podLogs(podName, stream)
 			if err != nil {
 				log.Errorf("Error streaming from pod: %v", err)
 			}

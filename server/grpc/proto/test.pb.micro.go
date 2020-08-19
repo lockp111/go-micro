@@ -12,9 +12,9 @@ import (
 
 import (
 	context "context"
-	api "github.com/micro/go-micro/v2/api"
-	client "github.com/micro/go-micro/v2/client"
-	server "github.com/micro/go-micro/v2/server"
+	api "github.com/micro/go-micro/v3/api"
+	client "github.com/micro/go-micro/v3/client"
+	server "github.com/micro/go-micro/v3/server"
 )
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -54,7 +54,7 @@ func NewTestEndpoints() []*api.Endpoint {
 		},
 		&api.Endpoint{
 			Name:    "Test.CallPcreInvalid",
-			Path:    []string{"/api/v0/test/call/pcre/invalid/?"},
+			Path:    []string{"^/api/v0/test/call/pcre/invalid/?"},
 			Method:  []string{"POST"},
 			Body:    "*",
 			Handler: "rpc",
@@ -146,7 +146,7 @@ func RegisterTestHandler(s server.Server, hdlr TestHandler, opts ...server.Handl
 	}))
 	opts = append(opts, api.WithEndpoint(&api.Endpoint{
 		Name:    "Test.CallPcreInvalid",
-		Path:    []string{"/api/v0/test/call/pcre/invalid/?"},
+		Path:    []string{"^/api/v0/test/call/pcre/invalid/?"},
 		Method:  []string{"POST"},
 		Body:    "*",
 		Handler: "rpc",

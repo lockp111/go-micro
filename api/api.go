@@ -5,8 +5,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/micro/go-micro/v2/registry"
-	"github.com/micro/go-micro/v2/server"
+	"github.com/micro/go-micro/v3/registry"
+	"github.com/micro/go-micro/v3/server"
 )
 
 type Api interface {
@@ -18,7 +18,7 @@ type Api interface {
 	Register(*Endpoint) error
 	// Register a route
 	Deregister(*Endpoint) error
-	// Implemenation of api
+	// Implementation of api
 	String() string
 }
 

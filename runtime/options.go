@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"io"
+
+	"github.com/micro/go-micro/v3/client"
 )
 
 type Option func(o *Options)
@@ -17,6 +19,8 @@ type Options struct {
 	Source string
 	// Base image to use
 	Image string
+	// Client to use when making requests
+	Client client.Client
 }
 
 // WithSource sets the base image / repository
@@ -47,6 +51,13 @@ func WithImage(t string) Option {
 	}
 }
 
+// WithClient sets the client to use
+func WithClient(c client.Client) Option {
+	return func(o *Options) {
+		o.Client = c
+	}
+}
+
 type CreateOption func(o *CreateOptions)
 
 type ReadOption func(o *ReadOptions)
@@ -71,6 +82,10 @@ type CreateOptions struct {
 	Namespace string
 	// Specify the context to use
 	Context context.Context
+	// Secrets to use
+	Secrets map[string]string
+	// Resources to allocate the service
+	Resources *Resources
 }
 
 // ReadOptions queries runtime services
@@ -115,6 +130,17 @@ func CreateContext(ctx context.Context) CreateOption {
 	}
 }
 
+// WithSecret sets a secret to provide the service with
+func WithSecret(key, value string) CreateOption {
+	return func(o *CreateOptions) {
+		if o.Secrets == nil {
+			o.Secrets = map[string]string{key: value}
+		} else {
+			o.Secrets[key] = value
+		}
+	}
+}
+
 // WithCommand specifies the command to execute
 func WithCommand(cmd ...string) CreateOption {
 	return func(o *CreateOptions) {
@@ -149,6 +175,13 @@ func WithEnv(env []string) CreateOption {
 func WithOutput(out io.Writer) CreateOption {
 	return func(o *CreateOptions) {
 		o.Output = out
+	}
+}
+
+// ResourceLimits sets the resources for the service to use
+func ResourceLimits(r *Resources) CreateOption {
+	return func(o *CreateOptions) {
+		o.Resources = r
 	}
 }
 
@@ -194,6 +227,19 @@ type UpdateOptions struct {
 	Namespace string
 	// Specify the context to use
 	Context context.Context
+	// Secrets to use
+	Secrets map[string]string
+}
+
+// WithSecret sets a secret to provide the service with
+func UpdateSecret(key, value string) UpdateOption {
+	return func(o *UpdateOptions) {
+		if o.Secrets == nil {
+			o.Secrets = map[string]string{key: value}
+		} else {
+			o.Secrets[key] = value
+		}
+	}
 }
 
 // UpdateNamespace sets the namespace

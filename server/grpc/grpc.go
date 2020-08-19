@@ -15,15 +15,17 @@ import (
 	"time"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/micro/go-micro/v2/broker"
-	"github.com/micro/go-micro/v2/errors"
-	"github.com/micro/go-micro/v2/logger"
-	meta "github.com/micro/go-micro/v2/metadata"
-	"github.com/micro/go-micro/v2/registry"
-	"github.com/micro/go-micro/v2/server"
-	"github.com/micro/go-micro/v2/util/addr"
-	mgrpc "github.com/micro/go-micro/v2/util/grpc"
-	mnet "github.com/micro/go-micro/v2/util/net"
+	"github.com/micro/go-micro/v3/broker"
+	"github.com/micro/go-micro/v3/errors"
+	pberr "github.com/micro/go-micro/v3/errors/proto"
+	"github.com/micro/go-micro/v3/logger"
+	meta "github.com/micro/go-micro/v3/metadata"
+	"github.com/micro/go-micro/v3/registry"
+	"github.com/micro/go-micro/v3/server"
+	"github.com/micro/go-micro/v3/util/addr"
+	"github.com/micro/go-micro/v3/util/backoff"
+	mgrpc "github.com/micro/go-micro/v3/util/grpc"
+	mnet "github.com/micro/go-micro/v3/util/net"
 	"golang.org/x/net/netutil"
 
 	"google.golang.org/grpc"
@@ -117,6 +119,8 @@ func (g *grpcServer) configure(opts ...server.Option) {
 		o(&g.opts)
 	}
 
+	g.wg = wait(g.opts.Context)
+
 	maxMsgSize := g.getMaxMsgSize()
 
 	gopts := []grpc.ServerOption{
@@ -182,7 +186,17 @@ func (g *grpcServer) getListener() net.Listener {
 	return nil
 }
 
-func (g *grpcServer) handler(srv interface{}, stream grpc.ServerStream) error {
+func (g *grpcServer) handler(srv interface{}, stream grpc.ServerStream) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
+				logger.Error("panic recovered: ", r)
+				logger.Error(string(debug.Stack()))
+			}
+			err = errors.InternalServerError(g.opts.Name, "panic recovered: %v", r)
+		}
+	}()
+
 	if g.wg != nil {
 		g.wg.Add(1)
 		defer g.wg.Done()
@@ -248,14 +262,14 @@ func (g *grpcServer) handler(srv interface{}, stream grpc.ServerStream) error {
 	if g.opts.Router != nil {
 		cc, err := g.newGRPCCodec(ct)
 		if err != nil {
-			return errors.InternalServerError("go.micro.server", err.Error())
+			return errors.InternalServerError(g.opts.Name, err.Error())
 		}
 		codec := &grpcCodec{
-			method:   fmt.Sprintf("%s.%s", serviceName, methodName),
-			endpoint: fmt.Sprintf("%s.%s", serviceName, methodName),
-			target:   g.opts.Name,
-			s:        stream,
-			c:        cc,
+			ServerStream: stream,
+			method:       fmt.Sprintf("%s.%s", serviceName, methodName),
+			endpoint:     fmt.Sprintf("%s.%s", serviceName, methodName),
+			target:       g.opts.Name,
+			c:            cc,
 		}
 
 		// create a client.Request
@@ -348,7 +362,7 @@ func (g *grpcServer) processRequest(stream grpc.ServerStream, service *service, 
 
 		cc, err := g.newGRPCCodec(ct)
 		if err != nil {
-			return errors.InternalServerError("go.micro.server", err.Error())
+			return errors.InternalServerError(g.opts.Name, err.Error())
 		}
 		b, err := cc.Marshal(argv.Interface())
 		if err != nil {
@@ -366,15 +380,6 @@ func (g *grpcServer) processRequest(stream grpc.ServerStream, service *service, 
 
 		// define the handler func
 		fn := func(ctx context.Context, req server.Request, rsp interface{}) (err error) {
-			defer func() {
-				if r := recover(); r != nil {
-					if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
-						logger.Error("panic recovered: ", r)
-						logger.Error(string(debug.Stack()))
-					}
-					err = errors.InternalServerError("go.micro.server", "panic recovered: %v", r)
-				}
-			}()
 			returnValues = function.Call([]reflect.Value{service.rcvr, mtype.prepareContext(ctx), reflect.ValueOf(argv.Interface()), reflect.ValueOf(rsp)})
 
 			// The return value for the method is an error.
@@ -389,17 +394,27 @@ func (g *grpcServer) processRequest(stream grpc.ServerStream, service *service, 
 		for i := len(g.opts.HdlrWrappers); i > 0; i-- {
 			fn = g.opts.HdlrWrappers[i-1](fn)
 		}
+
 		statusCode := codes.OK
 		statusDesc := ""
+
 		// execute the handler
 		if appErr := fn(ctx, r, replyv.Interface()); appErr != nil {
 			var errStatus *status.Status
 			switch verr := appErr.(type) {
 			case *errors.Error:
+				perr := &pberr.Error{
+					Id:     verr.Id,
+					Code:   verr.Code,
+					Detail: verr.Detail,
+					Status: verr.Status,
+				}
+
 				// micro.Error now proto based and we can attach it to grpc status
 				statusCode = microError(verr)
 				statusDesc = verr.Error()
-				errStatus, err = status.New(statusCode, statusDesc).WithDetails(verr)
+
+				errStatus, err = status.New(statusCode, statusDesc).WithDetails(perr)
 				if err != nil {
 					return err
 				}
@@ -424,6 +439,7 @@ func (g *grpcServer) processRequest(stream grpc.ServerStream, service *service, 
 		if err := stream.SendMsg(replyv.Interface()); err != nil {
 			return err
 		}
+
 		return status.New(statusCode, statusDesc).Err()
 	}
 }
@@ -439,8 +455,8 @@ func (g *grpcServer) processStream(stream grpc.ServerStream, service *service, m
 	}
 
 	ss := &rpcStream{
-		request: r,
-		s:       stream,
+		ServerStream: stream,
+		request:      r,
 	}
 
 	function := mtype.method.Func
@@ -468,10 +484,16 @@ func (g *grpcServer) processStream(stream grpc.ServerStream, service *service, m
 		var errStatus *status.Status
 		switch verr := appErr.(type) {
 		case *errors.Error:
+			perr := &pberr.Error{
+				Id:     verr.Id,
+				Code:   verr.Code,
+				Detail: verr.Detail,
+				Status: verr.Status,
+			}
 			// micro.Error now proto based and we can attach it to grpc status
 			statusCode = microError(verr)
 			statusDesc = verr.Error()
-			errStatus, err = status.New(statusCode, statusDesc).WithDetails(verr)
+			errStatus, err = status.New(statusCode, statusDesc).WithDetails(perr)
 			if err != nil {
 				return err
 			}
@@ -489,6 +511,7 @@ func (g *grpcServer) processStream(stream grpc.ServerStream, service *service, m
 			statusDesc = verr.Error()
 			errStatus = status.New(statusCode, statusDesc)
 		}
+
 		return errStatus.Err()
 	}
 
@@ -566,16 +589,45 @@ func (g *grpcServer) Subscribe(sb server.Subscriber) error {
 }
 
 func (g *grpcServer) Register() error {
-
 	g.RLock()
 	rsvc := g.rsvc
 	config := g.opts
 	g.RUnlock()
 
+	// only register if it exists or is not noop
+	if config.Registry == nil || config.Registry.String() == "noop" {
+		return nil
+	}
+
+	regFunc := func(service *registry.Service) error {
+		var regErr error
+
+		for i := 0; i < 3; i++ {
+			// set the ttl and namespace
+			rOpts := []registry.RegisterOption{
+				registry.RegisterTTL(config.RegisterTTL),
+				registry.RegisterDomain(g.opts.Namespace),
+			}
+
+			// attempt to register
+			if err := config.Registry.Register(service, rOpts...); err != nil {
+				// set the error
+				regErr = err
+				// backoff then retry
+				time.Sleep(backoff.Do(i + 1))
+				continue
+			}
+			// success so nil error
+			regErr = nil
+			break
+		}
+
+		return regErr
+	}
+
 	// if service already filled, reuse it and return early
 	if rsvc != nil {
-		rOpts := []registry.RegisterOption{registry.RegisterTTL(config.RegisterTTL)}
-		if err := config.Registry.Register(rsvc, rOpts...); err != nil {
+		if err := regFunc(rsvc); err != nil {
 			return err
 		}
 		return nil
@@ -677,10 +729,8 @@ func (g *grpcServer) Register() error {
 		}
 	}
 
-	// create registry options
-	rOpts := []registry.RegisterOption{registry.RegisterTTL(config.RegisterTTL)}
-
-	if err := config.Registry.Register(service, rOpts...); err != nil {
+	// register the service
+	if err := regFunc(service); err != nil {
 		return err
 	}
 
@@ -701,10 +751,6 @@ func (g *grpcServer) Register() error {
 
 		if cx := sb.Options().Context; cx != nil {
 			opts = append(opts, broker.SubscribeContext(cx))
-		}
-
-		if !sb.Options().AutoAck {
-			opts = append(opts, broker.DisableAutoAck())
 		}
 
 		if logger.V(logger.InfoLevel, logger.DefaultLogger) {
@@ -732,6 +778,11 @@ func (g *grpcServer) Deregister() error {
 	g.RLock()
 	config := g.opts
 	g.RUnlock()
+
+	// only register if it exists or is not noop
+	if config.Registry == nil || config.Registry.String() == "noop" {
+		return nil
+	}
 
 	// check the advertise address first
 	// if it exists then use it, otherwise
@@ -771,7 +822,9 @@ func (g *grpcServer) Deregister() error {
 	if logger.V(logger.InfoLevel, logger.DefaultLogger) {
 		logger.Infof("Deregistering node: %s", node.Id)
 	}
-	if err := config.Registry.Deregister(service); err != nil {
+
+	opt := registry.DeregisterDomain(g.opts.Namespace)
+	if err := config.Registry.Deregister(service, opt); err != nil {
 		return err
 	}
 

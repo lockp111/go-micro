@@ -12,11 +12,11 @@ import (
 	"github.com/gobwas/httphead"
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
-	"github.com/micro/go-micro/v2/api"
-	"github.com/micro/go-micro/v2/client"
-	"github.com/micro/go-micro/v2/client/selector"
-	raw "github.com/micro/go-micro/v2/codec/bytes"
-	"github.com/micro/go-micro/v2/logger"
+	"github.com/micro/go-micro/v3/api"
+	"github.com/micro/go-micro/v3/client"
+	raw "github.com/micro/go-micro/v3/codec/bytes"
+	"github.com/micro/go-micro/v3/logger"
+	"github.com/micro/go-micro/v3/util/router"
 )
 
 // serveWebsocket will stream rpc back over websockets assuming json
@@ -110,9 +110,11 @@ func serveWebsocket(ctx context.Context, w http.ResponseWriter, r *http.Request,
 		client.StreamingRequest(),
 	)
 
-	so := selector.WithStrategy(strategy(service.Services))
+	// create custom router
+	callOpt := client.WithRouter(router.New(service.Services))
+
 	// create a new stream
-	stream, err := c.Stream(ctx, req, client.WithSelectOption(so))
+	stream, err := c.Stream(ctx, req, callOpt)
 	if err != nil {
 		if logger.V(logger.ErrorLevel, logger.DefaultLogger) {
 			logger.Error(err)
@@ -185,7 +187,11 @@ func writeLoop(rw io.ReadWriter, stream client.Stream) {
 			if err != nil {
 				if wserr, ok := err.(wsutil.ClosedError); ok {
 					switch wserr.Code {
+					case ws.StatusGoingAway:
+						// this happens when user leave the page
+						return
 					case ws.StatusNormalClosure, ws.StatusNoStatusRcvd:
+						// this happens when user close ws connection, or we don't get any status
 						return
 					}
 				}

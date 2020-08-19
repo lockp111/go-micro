@@ -5,11 +5,12 @@ import (
 	"net"
 	"testing"
 
-	"github.com/micro/go-micro/v2/client"
-	"github.com/micro/go-micro/v2/client/selector"
-	"github.com/micro/go-micro/v2/errors"
-	"github.com/micro/go-micro/v2/registry"
-	"github.com/micro/go-micro/v2/registry/memory"
+	"github.com/micro/go-micro/v3/client"
+	"github.com/micro/go-micro/v3/errors"
+	"github.com/micro/go-micro/v3/registry"
+	"github.com/micro/go-micro/v3/registry/memory"
+	"github.com/micro/go-micro/v3/router"
+	regRouter "github.com/micro/go-micro/v3/router/registry"
 	pgrpc "google.golang.org/grpc"
 	pb "google.golang.org/grpc/examples/helloworld/helloworld"
 )
@@ -56,16 +57,11 @@ func TestGRPCClient(t *testing.T) {
 		},
 	})
 
-	// create selector
-	se := selector.NewSelector(
-		selector.Registry(r),
-	)
+	// create router
+	rtr := regRouter.NewRouter(router.Registry(r))
 
 	// create client
-	c := NewClient(
-		client.Registry(r),
-		client.Selector(se),
-	)
+	c := NewClient(client.Router(rtr))
 
 	testMethods := []string{
 		"/helloworld.Greeter/SayHello",
